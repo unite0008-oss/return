@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="包貨錄影" />
+<meta name="theme-color" content="#0c0f14" />
+<title>包貨錄影</title>
+<style>
+  :root{
+    --bg:#0c0f14;          /* viewfinder near-black */
+    --panel:#141922;
+    --panel-2:#1c222d;
+    --line:#2a3340;
+    --ink:#e8edf4;
+    --ink-dim:#8e9bad;
+    --scan:#b6f33a;        /* scanner lime — the signature accent */
+    --scan-deep:#7bc20f;
+    --rec:#ff4136;         /* recording red */
+    --ok:#36d399;
+    --warn:#ffb020;
+    --mono:'SF Mono','Roboto Mono',ui-monospace,'Cascadia Mono','Menlo',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);overscroll-behavior:none}
+  body{display:flex;flex-direction:column;height:100dvh;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+  button{font-family:inherit;cursor:pointer;border:none;color:inherit;background:none}
+
+  /* ---- top bar ---- */
+  header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.5px}
+  .brand .mark{width:20px;height:20px;border:2px solid var(--scan);border-radius:4px;position:relative}
+  .brand .mark::after{content:"";position:absolute;left:2px;right:2px;top:7px;height:2px;background:var(--scan);box-shadow:0 4px 0 var(--scan),0 -4px 0 var(--scan)}
+  .brand small{font-family:var(--mono);font-weight:500;color:var(--ink-dim);font-size:11px;letter-spacing:1px}
+  .spacer{flex:1}
+  .dot{font-family:var(--mono);font-size:11px;font-weight:700;display:inline-flex;align-items:center;gap:5px;padding:5px 9px;border:1px solid var(--line);border-radius:999px;color:var(--ink-dim)}
+  .dot i{width:7px;height:7px;border-radius:50%;background:var(--ink-dim);display:inline-block}
+  .dot.on{color:var(--ink);border-color:var(--scan-deep)}
+  .dot.on i{background:var(--scan);box-shadow:0 0 8px var(--scan)}
+  .gear{width:40px;height:40px;border-radius:10px;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:18px;background:var(--panel-2)}
+
+  /* ---- stage ---- */
+  main{flex:1;position:relative;overflow:hidden;display:flex;flex-direction:column}
+  #stage{flex:1;position:relative;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  video,#canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+  #canvas{display:none}
+
+  .idle-hint{position:relative;z-index:2;text-align:center;padding:24px;max-width:340px}
+  .idle-hint .big{font-size:19px;font-weight:700;margin:0 0 8px}
+  .idle-hint p{color:var(--ink-dim);font-size:14px;line-height:1.6;margin:0}
+
+  /* scanner reticle */
+  .reticle{position:absolute;z-index:3;left:50%;top:44%;transform:translate(-50%,-50%);width:86%;max-width:420px;aspect-ratio:1.1/1;pointer-events:none;border-radius:16px;box-shadow:0 0 0 9999px rgba(0,0,0,.42)}
+  .reticle::before,.reticle::after,.reticle b,.reticle i{content:"";position:absolute;width:38px;height:38px;border:4px solid var(--scan);filter:drop-shadow(0 0 6px rgba(182,243,58,.6))}
+  .reticle::before{top:0;left:0;border-right:0;border-bottom:0;border-radius:6px 0 0 0}
+  .reticle::after{top:0;right:0;border-left:0;border-bottom:0;border-radius:0 6px 0 0}
+  .reticle b{bottom:0;left:0;border-right:0;border-top:0;border-radius:0 0 0 6px}
+  .reticle i{bottom:0;right:0;border-left:0;border-top:0;border-radius:0 0 6px 0}
+  .scanline{position:absolute;left:6%;right:6%;height:2px;background:var(--scan);box-shadow:0 0 10px 2px var(--scan);animation:sweep 2.2s ease-in-out infinite}
+  @keyframes sweep{0%,100%{top:8%}50%{top:90%}}
+
+  /* recording overlay (also burned into video via canvas) */
+  .rec-badge{position:absolute;z-index:4;top:14px;left:14px;display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);padding:7px 12px;border-radius:999px;font-family:var(--mono);font-weight:700;font-size:13px}
+  .rec-badge .blink{width:11px;height:11px;border-radius:50%;background:var(--rec);animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:.15}}
+  .order-tag{position:absolute;z-index:4;top:14px;right:14px;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);padding:7px 12px;border-radius:8px;font-family:var(--mono);font-weight:700;font-size:13px;color:var(--scan);max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* scanned result chip */
+  .scanned{position:absolute;z-index:4;left:50%;bottom:18px;transform:translateX(-50%);text-align:center;width:88%}
+  .scanned .lbl{font-family:var(--mono);font-size:11px;letter-spacing:2px;color:var(--scan);margin-bottom:4px}
+  .scanned .no{font-family:var(--mono);font-size:26px;font-weight:800;word-break:break-all;background:rgba(0,0,0,.5);padding:8px 14px;border-radius:10px;border:1px solid var(--scan-deep)}
+
+  /* ---- control dock ---- */
+  .dock{background:var(--panel);border-top:1px solid var(--line);padding:14px 16px calc(14px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:10px}
+  .row{display:flex;gap:10px}
+  .btn{flex:1;border-radius:14px;padding:16px;font-size:16px;font-weight:800;letter-spacing:.5px;display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);background:var(--panel-2);transition:transform .06s ease,filter .15s}
+  .btn:active{transform:scale(.985)}
+  .btn[disabled]{opacity:.4;pointer-events:none}
+  .btn.primary{background:var(--scan);color:#0a0d06;border-color:var(--scan)}
+  .btn.rec{background:var(--rec);color:#fff;border-color:var(--rec)}
+  .btn.ghost{background:transparent}
+  .btn .ic{font-size:19px}
+  .status{font-family:var(--mono);font-size:12.5px;color:var(--ink-dim);text-align:center;min-height:16px}
+  .status b{color:var(--ink)}
+
+  /* ---- history ---- */
+  .tabbar{display:flex;border-top:1px solid var(--line);background:var(--panel)}
+  .tabbar button{flex:1;padding:11px;font-size:12px;font-weight:700;color:var(--ink-dim);letter-spacing:1px;font-family:var(--mono);border-top:2px solid transparent}
+  .tabbar button.active{color:var(--scan);border-top-color:var(--scan)}
+  #historyView{display:none;flex:1;overflow:auto;background:var(--bg);padding:12px 14px}
+  .rec-item{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px}
+  .rec-item .head{display:flex;align-items:center;gap:10px}
+  .rec-item .no{font-family:var(--mono);font-weight:800;font-size:15px;flex:1;word-break:break-all}
+  .rec-item .meta{font-family:var(--mono);font-size:11px;color:var(--ink-dim);margin-top:4px}
+  .badges{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}
+  .badge{font-family:var(--mono);font-size:10.5px;font-weight:700;padding:4px 8px;border-radius:6px;border:1px solid var(--line);color:var(--ink-dim);display:inline-flex;gap:5px;align-items:center}
+  .badge.ok{color:var(--ok);border-color:#1f5e44}
+  .badge.err{color:var(--rec);border-color:#5e2420}
+  .badge.up{color:var(--warn);border-color:#5e4a1c}
+  .rec-actions{display:flex;gap:8px;margin-top:11px}
+  .err-msg{margin-top:9px;font-family:var(--mono);font-size:11px;line-height:1.5;color:#ff8b82;background:#2a1614;border:1px solid #5e2420;border-radius:8px;padding:8px 10px;word-break:break-all}
+  .rec-actions button{flex:1;font-family:var(--mono);font-size:12px;font-weight:700;padding:9px;border-radius:9px;border:1px solid var(--line);background:var(--panel-2)}
+  .rec-actions .del{color:var(--rec);border-color:#3a2522}
+  .rec-actions .view{background:var(--scan);color:#0a0d06;border-color:var(--scan);font-size:13px}
+  /* video player overlay */
+  .player{position:fixed;inset:0;z-index:55;background:#000;transform:translateY(100%);transition:transform .28s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+  .player.open{transform:translateY(0)}
+  .player-bar{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .player-title{flex:1;font-family:var(--mono);font-weight:800;font-size:15px;color:var(--scan);word-break:break-all}
+  .player-body{flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#000}
+  .player-body video{width:100%;height:100%;object-fit:contain;background:#000}
+  .player-actions{display:flex;gap:10px;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:var(--panel);border-top:1px solid var(--line)}
+  .player-actions button{flex:1;font-family:var(--mono);font-weight:700;font-size:13px;padding:13px;border-radius:11px;border:1px solid var(--line);background:var(--panel-2);color:var(--ink)}
+  .empty{text-align:center;color:var(--ink-dim);padding:48px 20px;font-size:14px;line-height:1.7}
+
+  /* ---- settings drawer ---- */
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:40;display:none}
+  .drawer{position:fixed;inset:0;z-index:50;background:var(--bg);transform:translateY(100%);transition:transform .28s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column}
+  .drawer.open{transform:translateY(0)}
+  .drawer header{position:sticky;top:0}
+  .drawer .body{flex:1;overflow:auto;padding:16px 16px 40px}
+  .field{margin-bottom:18px}
+  .field label{display:block;font-weight:700;font-size:14px;margin-bottom:6px}
+  .field .hint{font-size:12px;color:var(--ink-dim);line-height:1.55;margin:0 0 8px}
+  .field input[type=text]{width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:12px;font-family:var(--mono);font-size:13px}
+  .field input::placeholder{color:#5b6878}
+  .toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px}
+  .toggle .t-txt{font-size:14px;font-weight:600}
+  .toggle .t-sub{font-size:11.5px;color:var(--ink-dim);margin-top:2px}
+  .sw{width:48px;height:28px;border-radius:999px;background:var(--line);position:relative;flex:none;transition:background .15s}
+  .sw::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:left .15s}
+  .sw.on{background:var(--scan-deep)}
+  .sw.on::after{left:23px}
+  .connect-row{display:flex;gap:10px;margin-top:8px}
+  .connect-row button{flex:1;padding:13px;border-radius:11px;font-weight:800;font-size:14px;border:1px solid var(--line);background:var(--panel-2)}
+  .connect-row button.linked{background:#13241c;border-color:#1f5e44;color:var(--ok)}
+  .sect{font-family:var(--mono);font-size:11px;letter-spacing:2px;color:var(--scan);margin:6px 0 14px;text-transform:uppercase}
+  .urlbox{display:flex;gap:8px;align-items:center;background:var(--panel-2);border:1px dashed var(--line);border-radius:10px;padding:10px 12px;margin-top:6px}
+  .urlbox code{font-family:var(--mono);font-size:11.5px;color:var(--scan);flex:1;word-break:break-all}
+  .urlbox button{font-family:var(--mono);font-size:11px;font-weight:700;padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel);flex:none}
+  details.guide{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:0 14px;margin-bottom:16px}
+  details.guide summary{padding:14px 0;font-weight:700;font-size:14px;cursor:pointer;list-style:none}
+  details.guide summary::-webkit-details-marker{display:none}
+  details.guide summary::before{content:"＋ ";color:var(--scan);font-weight:800}
+  details.guide[open] summary::before{content:"－ "}
+  details.guide ol{margin:0 0 14px;padding-left:20px;font-size:13px;color:var(--ink-dim);line-height:1.75}
+  details.guide ol b{color:var(--ink)}
+  .save-bar{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px calc(12px + env(safe-area-inset-bottom))}
+  .save-bar button{width:100%;background:var(--scan);color:#0a0d06;font-weight:800;font-size:16px;padding:15px;border-radius:13px}
+
+  /* toast */
+  #toast{position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);background:#000;border:1px solid var(--line);color:var(--ink);font-size:13px;font-weight:600;padding:11px 18px;border-radius:999px;z-index:60;opacity:0;transition:.25s;pointer-events:none;max-width:90%;text-align:center}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .focus-ring{position:fixed;width:74px;height:74px;margin:-37px 0 0 -37px;border:2px solid var(--scan);border-radius:10px;z-index:30;pointer-events:none;opacity:0;box-shadow:0 0 10px rgba(182,243,58,.5)}
+  .focus-ring.go{animation:focusPop .7s ease-out}
+  @keyframes focusPop{0%{opacity:1;transform:scale(1.5)}60%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1)}}
+  .hidden{display:none !important}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><span class="mark"></span><div>包貨錄影<br><small>PACK&middot;REC</small></div></div>
+  <div class="spacer"></div>
+  <span class="dot" id="dotG"><i></i>G</span>
+  <span class="dot" id="dotD"><i></i>D</span>
+  <button class="gear" id="openSettings" aria-label="設定">⚙</button>
+</header>
+
+<main>
+  <div id="stage">
+    <video id="preview" playsinline autoplay muted></video>
+    <canvas id="canvas"></canvas>
+
+    <!-- idle -->
+    <div class="idle-hint" id="idleHint">
+      <p class="big">準備包貨了嗎？</p>
+      <p>按下方「掃描單號」對準包裹條碼，掃到後就能開始錄影。每支影片會自動用單號命名並上傳到你的雲端。</p>
+    </div>
+
+    <!-- scanning -->
+    <div class="reticle hidden" id="reticle"><b></b><i></i><div class="scanline"></div></div>
+
+    <!-- recording overlays -->
+    <div class="rec-badge hidden" id="recBadge"><span class="blink"></span><span id="recTime">00:00</span></div>
+    <div class="order-tag hidden" id="orderTag"></div>
+
+    <!-- scanned result -->
+    <div class="scanned hidden" id="scannedChip">
+      <div class="lbl">已掃到單號</div>
+      <div class="no" id="scannedNo">—</div>
+    </div>
+  </div>
+
+  <!-- history -->
+  <div id="historyView"></div>
+
+  <div class="tabbar">
+    <button id="tabCapture" class="active">● 錄影</button>
+    <button id="tabHistory">出貨紀錄</button>
+  </div>
+
+  <div class="dock" id="dock">
+    <div class="status" id="status">就緒</div>
+    <div class="row" id="ctrls"><!-- buttons injected by state --></div>
+  </div>
+</main>
+
+<!-- settings -->
+<div class="scrim" id="scrim"></div>
+<div class="drawer" id="drawer">
+  <header>
+    <div class="brand"><span class="mark"></span><div>設定<br><small>SETTINGS</small></div></div>
+    <div class="spacer"></div>
+    <button class="gear" id="closeSettings">✕</button>
+  </header>
+  <div class="body">
+
+    <div class="sect">錄影選項</div>
+    <div class="toggle"><div><div class="t-txt">畫面燒上浮水印</div><div class="t-sub">在影片中嵌入日期、時間與單號（存證用）</div></div><div class="sw on" id="swWatermark"></div></div>
+    <div class="toggle"><div><div class="t-txt">同時錄音</div><div class="t-sub">關閉則只錄影像、沒有聲音</div></div><div class="sw on" id="swAudio"></div></div>
+    <div class="toggle"><div><div class="t-txt">掃到單號自動開始錄影</div><div class="t-sub">省一個步驟，掃完條碼立即進入錄影</div></div><div class="sw" id="swAutoRec"></div></div>
+
+    <div class="sect" style="margin-top:24px">雲端上傳</div>
+
+    <div class="field">
+      <label>Google Drive</label>
+      <p class="hint">貼上你自己的 OAuth Client ID，影片只會傳到你的 Google Drive。下方有設定教學。</p>
+      <input type="text" id="gClientId" placeholder="xxxxxx.apps.googleusercontent.com" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <div class="toggle" style="margin-top:10px"><div><div class="t-txt">開啟自動上傳到 Google Drive</div></div><div class="sw" id="swG"></div></div>
+      <div class="field" style="margin:8px 0 0"><input type="text" id="gFolder" placeholder="Drive 資料夾名稱（例：出貨錄影）" autocomplete="off"></div>
+      <div class="connect-row"><button id="btnConnectG">連結 Google</button></div>
+    </div>
+
+    <details class="guide">
+      <summary>Google Drive 設定教學（一次性）</summary>
+      <ol>
+        <li>到 <b>console.cloud.google.com</b> 建立一個專案。</li>
+        <li>左側「API 和服務 → 程式庫」搜尋 <b>Google Drive API</b> 並啟用。</li>
+        <li>「OAuth 同意畫面」選 <b>外部</b>，填基本資料，把自己的 Google 帳號加進<b>測試使用者</b>。</li>
+        <li>「憑證 → 建立憑證 → OAuth 用戶端 ID」，類型選 <b>網頁應用程式</b>。</li>
+        <li>在<b>已授權的 JavaScript 來源</b>貼上本頁網址（見最下方），不要結尾斜線。</li>
+        <li>把產生的 <b>用戶端 ID</b> 貼到上面欄位，按「連結 Google」。</li>
+      </ol>
+    </details>
+
+    <div class="field">
+      <label>Dropbox</label>
+      <p class="hint">貼上你自己的 App key，影片只會傳到你的 Dropbox。下方有設定教學。</p>
+      <input type="text" id="dAppKey" placeholder="Dropbox App key" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <div class="toggle" style="margin-top:10px"><div><div class="t-txt">開啟自動上傳到 Dropbox</div></div><div class="sw" id="swD"></div></div>
+      <div class="field" style="margin:8px 0 0"><input type="text" id="dFolder" placeholder="Dropbox 資料夾名稱（例：出貨錄影）" autocomplete="off"></div>
+      <div class="connect-row"><button id="btnConnectD">連結 Dropbox</button></div>
+    </div>
+
+    <details class="guide">
+      <summary>Dropbox 設定教學（一次性）</summary>
+      <ol>
+        <li>到 <b>dropbox.com/developers/apps</b> → <b>Create app</b>。</li>
+        <li>選 <b>Scoped access</b> → <b>App folder</b>（只會建立一個專屬資料夾，最安全）。</li>
+        <li>在 <b>Permissions</b> 勾選 <b>files.content.write</b> 與 <b>files.content.read</b>，按 Submit。</li>
+        <li>在 <b>Settings → OAuth 2 → Redirect URIs</b> 加入本頁網址（見最下方）。</li>
+        <li>把 <b>App key</b> 貼到上面欄位，按「連結 Dropbox」並登入授權。</li>
+      </ol>
+    </details>
+
+    <div class="sect" style="margin-top:24px">本頁網址</div>
+    <p class="hint" style="margin:0 0 4px">把這個網址填到上面兩個雲端的設定裡（JavaScript 來源 / Redirect URI）。</p>
+    <div class="urlbox"><code id="originUrl">—</code><button id="copyUrl">複製</button></div>
+
+  </div>
+  <div class="save-bar"><button id="saveSettings">儲存設定</button></div>
+</div>
+
+<!-- video player -->
+<div class="player" id="player">
+  <div class="player-bar">
+    <div class="player-title" id="playerTitle">—</div>
+    <button class="gear" id="closePlayer" aria-label="關閉">✕</button>
+  </div>
+  <div class="player-body">
+    <video id="playerVideo" controls playsinline webkit-playsinline></video>
+  </div>
+  <div class="player-actions">
+    <button id="playerShare">分享 / 下載</button>
+    <button id="playerClose2">完成</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<!-- libs -->
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async></script>
+<script>
+"use strict";
+/* =========================================================================
+   包貨錄影 — single-file PWA
+   Flow: scan barcode -> record (named by order no, optional burned-in
+   watermark) -> save locally (IndexedDB) -> auto-upload to the user's OWN
+   Google Drive + Dropbox. No third-party server is ever involved.
+   ========================================================================= */
+
+/* ---------- tiny helpers ---------- */
+const $ = (id)=>document.getElementById(id);
+const show = (el,on=true)=>el.classList.toggle('hidden',!on);
+let toastT;
+function toast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('show'),2600);}
+function sanitize(s){return (s||'').trim().replace(/[\\/:*?"<>|\s]+/g,'_').replace(/_+/g,'_').replace(/^_|_$/g,'').slice(0,80) || ('order_'+Date.now());}
+function pad(n){return String(n).padStart(2,'0');}
+function stamp(d){return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;}
+function humanSize(b){if(!b) return '—';const u=['B','KB','MB','GB'];let i=0;while(b>=1024&&i<u.length-1){b/=1024;i++;}return b.toFixed(b<10&&i>0?1:0)+u[i];}
+
+/* ---------- settings (localStorage) ---------- */
+const SET_KEY='packrec.settings.v1';
+const defaults={watermark:true,audio:true,autoRec:false,gClientId:'',gFolder:'出貨錄影',gEnabled:false,dAppKey:'',dFolder:'出貨錄影',dEnabled:false};
+let settings=Object.assign({},defaults,JSON.parse(localStorage.getItem(SET_KEY)||'{}'));
+function saveSet(){localStorage.setItem(SET_KEY,JSON.stringify(settings));}
+
+/* tokens kept separately (refresh tokens / folder ids) */
+const TOK_KEY='packrec.tokens.v1';
+let tokens=JSON.parse(localStorage.getItem(TOK_KEY)||'{}'); // {dropboxRefresh, gFolderId, dropboxAccess, dropboxExp}
+function saveTok(){localStorage.setItem(TOK_KEY,JSON.stringify(tokens));}
+
+/* ---------- IndexedDB for recordings ---------- */
+let db;
+function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open('packrec',1);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains('clips'))d.createObjectStore('clips',{keyPath:'id'});};r.onsuccess=()=>{db=r.result;res();};r.onerror=()=>rej(r.error);});}
+function dbPut(rec){return new Promise((res,rej)=>{const tx=db.transaction('clips','readwrite');tx.objectStore('clips').put(rec);tx.oncomplete=res;tx.onerror=()=>rej(tx.error);});}
+function dbAll(){return new Promise((res,rej)=>{const tx=db.transaction('clips','readonly');const rq=tx.objectStore('clips').getAll();rq.onsuccess=()=>res(rq.result.sort((a,b)=>b.createdAt-a.createdAt));rq.onerror=()=>rej(rq.error);});}
+function dbDel(id){return new Promise((res,rej)=>{const tx=db.transaction('clips','readwrite');tx.objectStore('clips').delete(id);tx.oncomplete=res;tx.onerror=()=>rej(tx.error);});}
+function dbGet(id){return new Promise((res,rej)=>{const tx=db.transaction('clips','readonly');const rq=tx.objectStore('clips').get(id);rq.onsuccess=()=>res(rq.result);rq.onerror=()=>rej(rq.error);});}
+
+/* ========================================================================
+   STATE MACHINE :  idle -> scanning -> scanned -> recording -> done
+   ======================================================================== */
+let state='idle';
+let stream=null;          // active getUserMedia stream
+let mediaRecorder=null;
+let chunks=[];
+let recStart=0,recTimer=null;
+let currentOrder='';
+let drawRAF=null;         // watermark canvas loop
+
+const preview=$('preview'), canvas=$('canvas'), ctx=canvas.getContext('2d');
+
+function setStatus(html){$('status').innerHTML=html;}
+
+function render(){
+  // overlays
+  show($('idleHint'), state==='idle');
+  show($('reticle'), state==='scanning');
+  show($('scannedChip'), state==='scanned');
+  show($('recBadge'), state==='recording');
+  show($('orderTag'), state==='recording');
+  show(preview, state!=='idle');
+  // controls
+  const c=$('ctrls'); c.innerHTML='';
+  const mk=(txt,cls,fn,ic)=>{const b=document.createElement('button');b.className='btn '+cls;b.innerHTML=(ic?`<span class="ic">${ic}</span>`:'')+txt;b.onclick=fn;return b;};
+  if(state==='idle'){
+    c.appendChild(mk('掃描單號','primary',startScan,'▣'));
+  }else if(state==='scanning'){
+    c.appendChild(mk('取消','ghost',stopAll,'✕'));
+    const t=mk(torchOn?'關燈':'補光','ghost',toggleTorch,'💡'); t.style.flex='0 0 30%'; c.appendChild(t);
+    const man=mk('手動','ghost',manualEntry,'⌨'); man.style.flex='0 0 30%'; c.appendChild(man);
+  }else if(state==='scanned'){
+    c.appendChild(mk('重掃','ghost',()=>{currentOrder='';startScan();},'↻'));
+    c.appendChild(mk('開始錄影','rec',startRecording,'●'));
+  }else if(state==='recording'){
+    c.appendChild(mk('結束並儲存','rec',stopRecording,'■'));
+  }else if(state==='done'){
+    c.appendChild(mk('下一筆','primary',()=>{goIdle();if(settings.autoRec)startScan();},'＋'));
+    const sh=mk('分享/下載','ghost',()=>shareLast(),'⤴'); sh.style.flex='0 0 42%'; c.appendChild(sh);
+  }
+}
+
+/* ---------- camera ---------- */
+async function getCamera(withAudio){
+  const video={facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080},frameRate:{ideal:30}};
+  let s;
+  try{ s=await navigator.mediaDevices.getUserMedia({video,audio:!!withAudio}); }
+  catch(e){ // looser fallback if the device can't meet the ideals
+    s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:!!withAudio});
+  }
+  // close-up packing needs active focus — turn on continuous AF / AE / AWB where supported
+  try{
+    const track=s.getVideoTracks()[0];
+    const caps=track.getCapabilities?track.getCapabilities():{};
+    const adv=[];
+    if(caps.focusMode&&caps.focusMode.includes('continuous'))adv.push({focusMode:'continuous'});
+    if(caps.exposureMode&&caps.exposureMode.includes('continuous'))adv.push({exposureMode:'continuous'});
+    if(caps.whiteBalanceMode&&caps.whiteBalanceMode.includes('continuous'))adv.push({whiteBalanceMode:'continuous'});
+    if(adv.length)await track.applyConstraints({advanced:adv});
+  }catch(_){}
+  return s;
+}
+function stopStream(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
+function waitForDims(v){return new Promise(res=>{ if(v.videoWidth&&v.videoHeight)return res(); const t=setTimeout(res,1200); v.addEventListener('loadedmetadata',()=>{clearTimeout(t);res();},{once:true}); });}
+
+/* tap the live view to refocus (supported mainly on Android Chrome; harmless elsewhere) */
+async function tapFocus(ev){
+  if(!stream)return;
+  const track=stream.getVideoTracks()[0];
+  if(!track||!track.getCapabilities)return;
+  let caps={}; try{caps=track.getCapabilities();}catch(_){return;}
+  try{
+    const rect=$('stage').getBoundingClientRect();
+    const px=(ev.clientX-rect.left)/rect.width, py=(ev.clientY-rect.top)/rect.height;
+    const adv=[];
+    if(caps.pointsOfInterest)adv.push({pointsOfInterest:[{x:Math.min(1,Math.max(0,px)),y:Math.min(1,Math.max(0,py))}]});
+    if(caps.focusMode&&caps.focusMode.includes('single-shot'))adv.push({focusMode:'single-shot'});
+    else if(caps.focusMode&&caps.focusMode.includes('continuous'))adv.push({focusMode:'continuous'});
+    if(adv.length){ await track.applyConstraints({advanced:adv}); showFocusRing(ev.clientX,ev.clientY); }
+  }catch(_){}
+}
+function showFocusRing(x,y){
+  let r=document.getElementById('focusRing');
+  if(!r){r=document.createElement('div');r.id='focusRing';r.className='focus-ring';document.body.appendChild(r);}
+  r.style.left=x+'px';r.style.top=y+'px';r.classList.remove('go');void r.offsetWidth;r.classList.add('go');
+}
+
+/* ---------- SCAN ENGINE ----------
+   - Android (has BarcodeDetector): native GPU decode on the whole live frame — fast & reliable
+   - iPhone/Safari (no BarcodeDetector): ZXing decodeFromStream (the proven path)
+   - continuous autofocus (in getCamera) + optional torch
+*/
+const BD_FORMATS=['qr_code','code_128','code_39','code_93','ean_13','ean_8','itf','codabar','upc_a','upc_e','data_matrix','pdf417','aztec'];
+let detector=null, zxingReader=null, legacyZxing=false, scanRAF=null, scanBusy=false, torchOn=false;
+
+function ensureZXing(){
+  if(zxingReader)return zxingReader;
+  zxingReader=new ZXing.BrowserMultiFormatReader();   // all formats incl. QR — matches the known-good path
+  return zxingReader;
+}
+function stopScanEngine(){
+  if(scanRAF){cancelAnimationFrame(scanRAF);scanRAF=null;}
+  scanBusy=false;
+  if(legacyZxing){ try{zxingReader&&zxingReader.reset();}catch(_){} }
+}
+
+async function startScan(){
+  try{
+    goIdleVisualOnly();
+    state='scanning'; render(); setStatus('把條碼 / QR Code 對準框內…');
+    stopStream();
+    stream=await getCamera(false);
+    preview.srcObject=stream; preview.muted=true; preview.playsInline=true; await preview.play().catch(()=>{});
+    preview.style.display='block'; canvas.style.display='none';
+    await waitForDims(preview);
+    torchOn=false; scanBusy=false; detector=null; legacyZxing=false;
+
+    // prefer native detector, but only with formats it actually supports
+    if('BarcodeDetector' in window){
+      try{
+        let supported=BD_FORMATS;
+        if(BarcodeDetector.getSupportedFormats){
+          const s=await BarcodeDetector.getSupportedFormats();
+          supported=BD_FORMATS.filter(f=>s.includes(f));
+        }
+        detector=supported.length?new BarcodeDetector({formats:supported}):new BarcodeDetector();
+      }catch(_){ detector=null; }
+    }
+
+    if(detector){
+      scanLoop();
+    }else{
+      if(typeof ZXing==='undefined'){toast('條碼元件載入中，請稍候再試');return;}
+      ensureZXing();
+      legacyZxing=true;
+      zxingReader.decodeFromStream(stream,preview,(res)=>{ if(res)onScanned(res.getText()); });
+    }
+    render();
+  }catch(e){ handleCamError(e); }
+}
+
+async function scanLoop(){
+  if(state!=='scanning'||!detector)return;
+  if(!scanBusy && preview.readyState>=2 && preview.videoWidth){
+    scanBusy=true;
+    try{
+      const codes=await detector.detect(preview);   // detect on the whole live frame — no fragile cropping
+      if(codes&&codes.length){ onScanned(codes[0].rawValue); return; }
+    }catch(_){}
+    scanBusy=false;
+  }
+  scanRAF=requestAnimationFrame(scanLoop);
+}
+
+async function toggleTorch(){
+  if(!stream)return;
+  try{
+    const track=stream.getVideoTracks()[0];
+    const caps=track.getCapabilities?track.getCapabilities():{};
+    if(!caps.torch){toast('此裝置不支援補光燈');return;}
+    torchOn=!torchOn;
+    await track.applyConstraints({advanced:[{torch:torchOn}]});
+    render();
+  }catch(e){ toast('無法切換補光燈'); }
+}
+
+function onScanned(text){
+  if(state!=='scanning')return;
+  stopScanEngine();
+  currentOrder=text.trim();
+  $('scannedNo').textContent=currentOrder;
+  if(navigator.vibrate)navigator.vibrate(60);
+  state='scanned';render();setStatus(`單號 <b>${currentOrder}</b> ✓`);
+  if(settings.autoRec){ setTimeout(startRecording,350); }
+}
+function manualEntry(){
+  const v=prompt('輸入單號 / 訂單編號');
+  if(v&&v.trim()){ stopScanEngine(); currentOrder=v.trim(); $('scannedNo').textContent=currentOrder; state='scanned'; render(); setStatus(`單號 <b>${currentOrder}</b> ✓`); }
+}
+
+/* ---------- pick a recordable mime type (mp4 for iOS, webm for Android) ---------- */
+function pickMime(){
+  const cands=['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+  for(const m of cands){ if(window.MediaRecorder&&MediaRecorder.isTypeSupported(m))return m; }
+  return '';
+}
+function extFor(mime){return /mp4/.test(mime)?'mp4':'webm';}
+
+/* ---------- RECORD ---------- */
+async function startRecording(){
+  try{
+    setStatus('啟動相機…');
+    stopStream();
+    stream=await getCamera(settings.audio);
+    preview.srcObject=stream; preview.muted=true; await preview.play().catch(()=>{});
+    await waitForDims(preview);
+
+    const mime=pickMime();
+    let recordStream=stream;
+
+    // true camera resolution (cap to 1080p for smooth encoding), drives both canvas size and bitrate
+    let vw=preview.videoWidth||1280, vh=preview.videoHeight||720;
+    const cap=1080;
+    if(Math.min(vw,vh)>cap){ const r=cap/Math.min(vw,vh); vw=Math.round(vw*r); vh=Math.round(vh*r); }
+    const fps=30;
+    // ~0.12 bits/pixel/frame → roughly 9 Mbps at 1080p; clamp 4–12 Mbps
+    const vbps=Math.min(12000000,Math.max(4000000,Math.round(vw*vh*fps*0.12)));
+    const recOpts={videoBitsPerSecond:vbps,audioBitsPerSecond:128000};
+    if(mime)recOpts.mimeType=mime;
+
+    // burned-in watermark via canvas pipeline (guarded; falls back to raw)
+    if(settings.watermark && canvas.captureStream){
+      try{
+        canvas.width=vw; canvas.height=vh;                 // match native res — no upscaling blur
+        canvas.style.display='block'; preview.style.display='none';
+        drawLoop();
+        const cs=canvas.captureStream(fps);
+        stream.getAudioTracks().forEach(t=>cs.addTrack(t));
+        recordStream=cs;
+      }catch(err){ stopDraw(); canvas.style.display='none'; preview.style.display='block'; recordStream=stream; }
+    }else{ canvas.style.display='none'; preview.style.display='block'; }
+
+    chunks=[];
+    try{ mediaRecorder=new MediaRecorder(recordStream,recOpts); }
+    catch(err){ try{ mediaRecorder=mime?new MediaRecorder(recordStream,{mimeType:mime}):new MediaRecorder(recordStream); }catch(e2){ mediaRecorder=new MediaRecorder(recordStream); } }
+    const realMime=mediaRecorder.mimeType||mime||'video/webm';
+    mediaRecorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};
+    mediaRecorder.onstop=()=>finishRecording(realMime);
+    mediaRecorder.start(1000);
+
+    state='recording';
+    $('orderTag').textContent=currentOrder;
+    recStart=Date.now();
+    tick(); recTimer=setInterval(tick,500);
+    render(); setStatus('錄影中… 結束後會自動上傳');
+    if(navigator.vibrate)navigator.vibrate(40);
+  }catch(e){ handleCamError(e); }
+}
+function tick(){const s=Math.floor((Date.now()-recStart)/1000);$('recTime').textContent=`${pad(Math.floor(s/60))}:${pad(s%60)}`;}
+
+function drawLoop(){
+  const W=canvas.width,H=canvas.height;
+  const f=()=>{
+    if(preview.readyState>=2){ ctx.drawImage(preview,0,0,W,H); }
+    // watermark band
+    const fs=Math.max(16,Math.round(W*0.026));
+    ctx.font=`700 ${fs}px monospace`;
+    const t1=stamp(new Date());
+    const t2='單號 '+currentOrder;
+    const pad2=Math.round(fs*0.5);
+    const bandH=fs*2+pad2*3;
+    ctx.fillStyle='rgba(0,0,0,0.45)';
+    ctx.fillRect(0,H-bandH,W,bandH);
+    ctx.fillStyle='#b6f33a'; ctx.textBaseline='top';
+    ctx.fillText(t2, pad2, H-bandH+pad2);
+    ctx.fillStyle='#ffffff';
+    ctx.fillText(t1, pad2, H-bandH+pad2+fs+pad2*0.6);
+    drawRAF=requestAnimationFrame(f);
+  };
+  f();
+}
+function stopDraw(){if(drawRAF)cancelAnimationFrame(drawRAF);drawRAF=null;}
+
+function stopRecording(){
+  if(mediaRecorder&&mediaRecorder.state!=='inactive'){ try{mediaRecorder.stop();}catch(_){}}
+  clearInterval(recTimer);
+}
+
+let lastSavedId=null;
+async function finishRecording(mime){
+  stopDraw();
+  const blob=new Blob(chunks,{type:mime});
+  chunks=[];
+  stopStream();
+  const ext=extFor(mime);
+  const filename=sanitize(currentOrder)+'.'+ext;
+  const rec={id:'c_'+Date.now(),orderNo:currentOrder,filename,mime,size:blob.size,createdAt:Date.now(),blob,up:{g:'idle',d:'idle'}};
+  lastSavedId=rec.id;
+  try{ await dbPut(rec); }catch(e){ console.error(e); }
+  state='done'; render();
+  setStatus(`已存檔 <b>${filename}</b>（${humanSize(blob.size)}）`);
+  if(navigator.vibrate)navigator.vibrate([40,60,40]);
+  // fire uploads
+  uploadRecord(rec.id);
+}
+
+/* ---------- share / download (zero-setup path) ---------- */
+async function shareLast(){ if(lastSavedId) shareRecord(lastSavedId); }
+async function shareRecord(id){
+  const rec=await dbGet(id); if(!rec)return;
+  const file=new File([rec.blob],rec.filename,{type:rec.mime});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file],title:rec.filename}); return; }catch(e){ if(e&&e.name==='AbortError')return; }
+  }
+  // fallback: download
+  const url=URL.createObjectURL(rec.blob);const a=document.createElement('a');a.href=url;a.download=rec.filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),4000);
+}
+
+/* ---------- in-app video player (instant playback) ---------- */
+let playerURL=null, playerId=null;
+async function openPlayer(id){
+  let rec; try{ rec=await dbGet(id); }catch(_){}
+  if(!rec){ toast('找不到這支影片'); return; }
+  if(playerURL){ URL.revokeObjectURL(playerURL); playerURL=null; }
+  playerURL=URL.createObjectURL(rec.blob);
+  playerId=id;
+  const v=$('playerVideo');
+  v.src=playerURL;
+  $('playerTitle').textContent=rec.orderNo||rec.filename;
+  $('player').classList.add('open');
+  try{ await v.play(); }catch(_){ /* user can tap play */ }
+}
+function closePlayer(){
+  const v=$('playerVideo');
+  try{ v.pause(); }catch(_){}
+  v.removeAttribute('src'); try{ v.load(); }catch(_){}
+  if(playerURL){ URL.revokeObjectURL(playerURL); playerURL=null; }
+  playerId=null;
+  $('player').classList.remove('open');
+}
+
+/* ---------- reset helpers ---------- */
+function goIdleVisualOnly(){stopDraw();clearInterval(recTimer);}
+function goIdle(){
+  goIdleVisualOnly();
+  stopScanEngine();
+  if(mediaRecorder&&mediaRecorder.state!=='inactive'){try{mediaRecorder.stop();}catch(_){}}
+  mediaRecorder=null;
+  stopStream();
+  canvas.style.display='none'; preview.style.display='none';
+  currentOrder=''; state='idle'; render(); setStatus('就緒');
+}
+function stopAll(){ goIdle(); }
+function handleCamError(e){
+  console.error(e);
+  let m='無法開啟相機';
+  if(e&&e.name==='NotAllowedError')m='相機權限被拒。請到瀏覽器設定允許相機（與麥克風）。';
+  else if(e&&e.name==='NotFoundError')m='找不到相機裝置。';
+  else if(location.protocol!=='https:'&&location.hostname!=='localhost')m='需要 HTTPS 才能使用相機。請把本頁放到 https 網址。';
+  toast(m); setStatus(m); state='idle'; render();
+}
+
+/* ========================================================================
+   GOOGLE DRIVE  (GIS token model, scope = drive.file)
+   ======================================================================== */
+let gTokenClient=null, gAccess=null, gExp=0;
+function gReady(){return settings.gEnabled && settings.gClientId && typeof google!=='undefined' && google.accounts;}
+function initGoogle(){
+  if(!settings.gClientId || typeof google==='undefined' || !google.accounts) return;
+  try{
+    gTokenClient=google.accounts.oauth2.initTokenClient({
+      client_id:settings.gClientId,
+      scope:'https://www.googleapis.com/auth/drive.file',
+      callback:(resp)=>{ if(resp&&resp.access_token){gAccess=resp.access_token;gExp=Date.now()+(resp.expires_in||3500)*1000;refreshDots();if(gWaiters.length){gWaiters.forEach(r=>r());gWaiters=[];}} }
+    });
+  }catch(e){console.error(e);}
+}
+let gWaiters=[];
+function gToken(interactive){
+  return new Promise((res,rej)=>{
+    if(gAccess&&Date.now()<gExp-30000){return res(gAccess);}
+    if(!gTokenClient){initGoogle();}
+    if(!gTokenClient)return rej(new Error('Google 未設定'));
+    gWaiters.push(()=>res(gAccess));
+    try{ gTokenClient.requestAccessToken({prompt: interactive?'consent':''}); }
+    catch(e){ rej(e); }
+    setTimeout(()=>{ if(!gAccess) rej(new Error('Google 授權逾時')); },20000);
+  });
+}
+async function gEnsureFolder(tok){
+  if(tokens.gFolderId)return tokens.gFolderId;
+  const name=settings.gFolder||'出貨錄影';
+  const r=await fetch('https://www.googleapis.com/drive/v3/files',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({name,mimeType:'application/vnd.google-apps.folder'})});
+  if(!r.ok)throw new Error('建立 Drive 資料夾失敗');
+  const j=await r.json(); tokens.gFolderId=j.id; saveTok(); return j.id;
+}
+async function gUpload(rec,tok){
+  const folderId=await gEnsureFolder(tok);
+  const meta={name:rec.filename,parents:[folderId]};
+  const init=await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',{
+    method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json; charset=UTF-8','X-Upload-Content-Type':rec.mime},body:JSON.stringify(meta)});
+  if(!init.ok)throw new Error('Drive 初始化失敗 '+init.status);
+  const session=init.headers.get('Location');
+  const put=await fetch(session,{method:'PUT',headers:{'Content-Type':rec.mime},body:rec.blob});
+  if(!put.ok)throw new Error('Drive 上傳失敗 '+put.status);
+  return true;
+}
+
+/* ========================================================================
+   DROPBOX  (PKCE + refresh token, scope = files.content.write/read)
+   ======================================================================== */
+function b64url(buf){return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+async function pkce(){const a=new Uint8Array(64);crypto.getRandomValues(a);const v=b64url(a.buffer);const h=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(v));return{verifier:v,challenge:b64url(h)};}
+function redirectUri(){
+  const host=location.hostname.replace(/\.+$/,'');            // drop any stray trailing dot
+  const port=location.port?(':'+location.port):'';
+  let path=location.pathname.replace(/\/{2,}/g,'/');           // collapse accidental double slashes
+  return location.protocol+'//'+host+port+path;
+}
+async function dropboxConnect(){
+  if(!settings.dAppKey){toast('請先填入 Dropbox App key');return;}
+  const {verifier,challenge}=await pkce();
+  sessionStorage.setItem('dbx_verifier',verifier);
+  settings.dAppKey=$('dAppKey').value.trim(); saveSet();
+  const u=new URL('https://www.dropbox.com/oauth2/authorize');
+  u.searchParams.set('client_id',settings.dAppKey);
+  u.searchParams.set('response_type','code');
+  u.searchParams.set('code_challenge',challenge);
+  u.searchParams.set('code_challenge_method','S256');
+  u.searchParams.set('token_access_type','offline');
+  u.searchParams.set('redirect_uri',redirectUri());
+  location.href=u.toString();
+}
+async function dropboxHandleRedirect(){
+  const p=new URLSearchParams(location.search);
+  const code=p.get('code'); if(!code)return;
+  const verifier=sessionStorage.getItem('dbx_verifier');
+  history.replaceState({},'',redirectUri());
+  if(!verifier||!settings.dAppKey)return;
+  try{
+    const body=new URLSearchParams({code,grant_type:'authorization_code',client_id:settings.dAppKey,code_verifier:verifier,redirect_uri:redirectUri()});
+    const r=await fetch('https://api.dropboxapi.com/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
+    const j=await r.json();
+    if(j.refresh_token){tokens.dropboxRefresh=j.refresh_token;tokens.dropboxAccess=j.access_token;tokens.dropboxExp=Date.now()+(j.expires_in||14000)*1000;saveTok();settings.dEnabled=true;saveSet();toast('Dropbox 已連結');refreshDots();}
+    else{toast('Dropbox 連結失敗');}
+  }catch(e){console.error(e);toast('Dropbox 連結失敗');}
+}
+async function dropboxToken(){
+  if(tokens.dropboxAccess&&Date.now()<tokens.dropboxExp-30000)return tokens.dropboxAccess;
+  if(!tokens.dropboxRefresh)throw new Error('Dropbox 未連結');
+  const body=new URLSearchParams({grant_type:'refresh_token',refresh_token:tokens.dropboxRefresh,client_id:settings.dAppKey});
+  const r=await fetch('https://api.dropboxapi.com/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
+  const j=await r.json();
+  if(!j.access_token)throw new Error('Dropbox 換 token 失敗');
+  tokens.dropboxAccess=j.access_token;tokens.dropboxExp=Date.now()+(j.expires_in||14000)*1000;saveTok();
+  return j.access_token;
+}
+async function dropboxUpload(rec){
+  const tok=await dropboxToken();
+  const folder=(settings.dFolder||'').trim();
+  const path='/'+(folder?folder.replace(/^\/|\/$/g,'')+'/':'')+rec.filename;
+  const arg={path,mode:'add',autorename:true,mute:true};
+  // HTTP headers are ASCII-only; Dropbox requires non-ASCII escaped as \uXXXX
+  const argHeader=JSON.stringify(arg).replace(/[\u007f-\uffff]/g,c=>'\\u'+('0000'+c.charCodeAt(0).toString(16)).slice(-4));
+  const r=await fetch('https://content.dropboxapi.com/2/files/upload',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Dropbox-API-Arg':argHeader,'Content-Type':'application/octet-stream'},body:rec.blob});
+  if(!r.ok){const t=await r.text();throw new Error('Dropbox '+r.status+'：'+t.slice(0,160));}
+  return true;
+}
+
+/* ========================================================================
+   UPLOAD ORCHESTRATION
+   ======================================================================== */
+async function uploadRecord(id){
+  const rec=await dbGet(id); if(!rec)return;
+  const jobs=[];
+  if(settings.gEnabled&&settings.gClientId){ jobs.push(runUpload(rec,'g')); }
+  if(settings.dEnabled&&tokens.dropboxRefresh){ jobs.push(runUpload(rec,'d')); }
+  if(!jobs.length){ setStatus(`已存檔 <b>${rec.filename}</b>（僅本機，未設定雲端）`); refreshHistory(); return; }
+  setStatus('上傳中…');
+  await Promise.allSettled(jobs);
+  const r2=await dbGet(id);
+  const okG=r2.up.g==='done', okD=r2.up.d==='done';
+  const parts=[];
+  if(settings.gEnabled)parts.push('Drive '+(okG?'✓':'✗'));
+  if(settings.dEnabled)parts.push('Dropbox '+(okD?'✓':'✗'));
+  setStatus(parts.join('　')||'已存檔');
+  refreshHistory();
+}
+async function runUpload(rec,which){
+  const fresh=await dbGet(rec.id); if(!fresh)return;
+  fresh.up[which]='up'; await dbPut(fresh); refreshHistory();
+  try{
+    if(which==='g'){ const tok=await gToken(false); await gUpload(fresh,tok); }
+    else{ await dropboxUpload(fresh); }
+    const f2=await dbGet(rec.id); f2.up[which]='done'; await dbPut(f2);
+  }catch(e){
+    console.error(which,e);
+    const f2=await dbGet(rec.id); if(f2){f2.up[which]='err'; f2.up[which+'msg']=String(e.message||e); await dbPut(f2);}
+  }
+  refreshHistory();
+}
+
+/* ========================================================================
+   HISTORY VIEW
+   ======================================================================== */
+async function refreshHistory(){
+  const wrap=$('historyView');
+  if(wrap.style.display!=='block')return; // only render when visible
+  const all=await dbAll();
+  if(!all.length){ wrap.innerHTML='<div class="empty">還沒有出貨紀錄。<br>回到「錄影」分頁，掃描第一筆單號吧。</div>'; return; }
+  wrap.innerHTML='';
+  const esc=s=>String(s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+  for(const r of all){
+    const el=document.createElement('div');el.className='rec-item';
+    const badge=(label,st)=>{const cls=st==='done'?'ok':st==='err'?'err':st==='up'?'up':'';const ic=st==='done'?'✓':st==='err'?'✗':st==='up'?'⟳':'·';return `<span class="badge ${cls}">${label} ${ic}</span>`;};
+    const errs=[];
+    if(r.up&&r.up.g==='err'&&r.up.gmsg)errs.push('Drive：'+esc(r.up.gmsg));
+    if(r.up&&r.up.d==='err'&&r.up.dmsg)errs.push('Dropbox：'+esc(r.up.dmsg));
+    el.innerHTML=`
+      <div class="head"><div class="no">${esc(r.orderNo)||'(無單號)'}</div></div>
+      <div class="meta">${stamp(new Date(r.createdAt))} · ${humanSize(r.size)} · ${esc(r.filename)}</div>
+      <div class="badges">
+        ${settings.gEnabled?badge('Drive',r.up&&r.up.g):''}
+        ${settings.dEnabled?badge('Dropbox',r.up&&r.up.d):''}
+        ${(!settings.gEnabled&&!settings.dEnabled)?'<span class="badge">本機已存</span>':''}
+      </div>
+      ${errs.length?`<div class="err-msg">${errs.join('<br>')}</div>`:''}
+      <div class="rec-actions">
+        <button class="view" data-act="view" data-id="${r.id}">▶ 查看影片</button>
+      </div>
+      <div class="rec-actions">
+        <button data-act="share" data-id="${r.id}">分享/下載</button>
+        <button data-act="retry" data-id="${r.id}">重新上傳</button>
+        <button class="del" data-act="del" data-id="${r.id}">刪除</button>
+      </div>`;
+    wrap.appendChild(el);
+  }
+  wrap.querySelectorAll('button[data-act]').forEach(b=>{
+    b.onclick=async()=>{const id=b.dataset.id,act=b.dataset.act;
+      if(act==='view')openPlayer(id);
+      else if(act==='share')shareRecord(id);
+      else if(act==='retry'){toast('重新上傳中…');uploadRecord(id);}
+      else if(act==='del'){ if(confirm('刪除這筆紀錄與影片？此動作無法復原。')){await dbDel(id);refreshHistory();} }
+    };
+  });
+}
+
+/* ========================================================================
+   TABS
+   ======================================================================== */
+function showTab(which){
+  const cap=which==='capture';
+  $('stage').style.display=cap?'flex':'none';
+  $('historyView').style.display=cap?'none':'block';
+  $('dock').style.display=cap?'flex':'none';
+  $('tabCapture').classList.toggle('active',cap);
+  $('tabHistory').classList.toggle('active',!cap);
+  if(!cap){ if(state!=='idle'&&state!=='done'&&state!=='recording')goIdle(); refreshHistory(); }
+}
+$('tabCapture').onclick=()=>showTab('capture');
+$('tabHistory').onclick=()=>showTab('history');
+$('stage').addEventListener('click',(e)=>{ if(state==='scanning'||state==='recording') tapFocus(e); });
+$('closePlayer').onclick=closePlayer;
+$('playerClose2').onclick=closePlayer;
+$('playerShare').onclick=()=>{ if(playerId)shareRecord(playerId); };
+
+/* ========================================================================
+   SETTINGS WIRING
+   ======================================================================== */
+function bindSwitch(el,key,after){ el.onclick=()=>{ settings[key]=!settings[key]; el.classList.toggle('on',settings[key]); saveSet(); if(after)after(); }; el.classList.toggle('on',!!settings[key]); }
+function openDrawer(){
+  $('gClientId').value=settings.gClientId; $('gFolder').value=settings.gFolder;
+  $('dAppKey').value=settings.dAppKey; $('dFolder').value=settings.dFolder;
+  $('swWatermark').classList.toggle('on',settings.watermark);
+  $('swAudio').classList.toggle('on',settings.audio);
+  $('swAutoRec').classList.toggle('on',settings.autoRec);
+  $('swG').classList.toggle('on',settings.gEnabled);
+  $('swD').classList.toggle('on',settings.dEnabled);
+  $('originUrl').textContent=redirectUri();
+  $('btnConnectG').classList.toggle('linked',!!gAccess);
+  $('btnConnectG').textContent=gAccess?'Google 已連結 ✓':'連結 Google';
+  $('btnConnectD').classList.toggle('linked',!!tokens.dropboxRefresh);
+  $('btnConnectD').textContent=tokens.dropboxRefresh?'Dropbox 已連結 ✓':'連結 Dropbox';
+  $('scrim').style.display='block'; $('drawer').classList.add('open');
+}
+function closeDrawer(){ $('scrim').style.display='none'; $('drawer').classList.remove('open'); }
+$('openSettings').onclick=openDrawer;
+$('closeSettings').onclick=closeDrawer;
+$('scrim').onclick=closeDrawer;
+bindSwitch($('swWatermark'),'watermark');
+bindSwitch($('swAudio'),'audio');
+bindSwitch($('swAutoRec'),'autoRec');
+bindSwitch($('swG'),'gEnabled',refreshDots);
+bindSwitch($('swD'),'dEnabled',refreshDots);
+$('copyUrl').onclick=()=>{navigator.clipboard&&navigator.clipboard.writeText(redirectUri());toast('已複製網址');};
+$('btnConnectG').onclick=async()=>{
+  settings.gClientId=$('gClientId').value.trim(); settings.gFolder=$('gFolder').value.trim()||'出貨錄影';
+  settings.gEnabled=true; $('swG').classList.add('on'); saveSet(); initGoogle();
+  try{ await gToken(true); settings.gEnabled=true; saveSet(); toast('Google 已連結'); openDrawer(); }
+  catch(e){ toast('Google 連結失敗：'+(e.message||e)); }
+};
+$('btnConnectD').onclick=()=>{ settings.dAppKey=$('dAppKey').value.trim(); settings.dFolder=$('dFolder').value.trim()||'出貨錄影'; saveSet(); dropboxConnect(); };
+$('saveSettings').onclick=()=>{
+  settings.gClientId=$('gClientId').value.trim();
+  settings.gFolder=$('gFolder').value.trim()||'出貨錄影';
+  settings.dAppKey=$('dAppKey').value.trim();
+  settings.dFolder=$('dFolder').value.trim()||'出貨錄影';
+  saveSet(); refreshDots(); closeDrawer(); toast('設定已儲存');
+};
+
+function refreshDots(){
+  const g=$('dotG'), d=$('dotD');
+  g.classList.toggle('on',!!(settings.gEnabled&&settings.gClientId));
+  d.classList.toggle('on',!!(settings.dEnabled&&tokens.dropboxRefresh));
+}
+
+/* ========================================================================
+   BOOT
+   ======================================================================== */
+window.addEventListener('load',()=>{ setTimeout(initGoogle,800); });
+(async function boot(){
+  try{ await openDB(); }catch(e){ console.error(e); }
+  // ask the OS to keep this site's stored videos from being auto-evicted
+  try{ if(navigator.storage&&navigator.storage.persist){ await navigator.storage.persist(); } }catch(_){}
+  await dropboxHandleRedirect();
+  refreshDots();
+  render();
+  setStatus('就緒');
+  if(location.protocol!=='https:'&&location.hostname!=='localhost'){
+    setStatus('⚠ 需要 HTTPS 才能用相機與上傳');
+  }
+})();
+</script>
+</body>
+</html>
