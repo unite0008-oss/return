@@ -222,6 +222,7 @@
     <div class="sect">錄影選項</div>
     <div class="toggle"><div><div class="t-txt">畫面燒上浮水印</div><div class="t-sub">在影片中嵌入日期、時間與單號（存證用）</div></div><div class="sw on" id="swWatermark"></div></div>
     <div class="toggle"><div><div class="t-txt">同時錄音</div><div class="t-sub">關閉則只錄影像、沒有聲音</div></div><div class="sw on" id="swAudio"></div></div>
+    <div class="toggle"><div><div class="t-txt">高畫質錄影</div><div class="t-sub">畫面更清晰，但檔案大很多、上傳較慢；關閉為標準畫質(建議)</div></div><div class="sw" id="swHQ"></div></div>
     <div class="toggle"><div><div class="t-txt">掃到單號自動開始錄影</div><div class="t-sub">省一個步驟，掃完條碼立即進入錄影</div></div><div class="sw" id="swAutoRec"></div></div>
 
     <div class="sect" style="margin-top:24px">雲端上傳</div>
@@ -316,7 +317,7 @@ function humanSize(b){if(!b) return '—';const u=['B','KB','MB','GB'];let i=0;w
 
 /* ---------- settings (localStorage) ---------- */
 const SET_KEY='packrec.settings.v1';
-const defaults={watermark:true,audio:true,autoRec:false,gClientId:'',gFolder:'出貨錄影',gEnabled:false,dAppKey:'',dFolder:'出貨錄影',dEnabled:false};
+const defaults={watermark:true,audio:true,autoRec:false,hq:false,gClientId:'',gFolder:'出貨錄影',gEnabled:false,dAppKey:'',dFolder:'出貨錄影',dEnabled:false};
 let settings=Object.assign({},defaults,JSON.parse(localStorage.getItem(SET_KEY)||'{}'));
 function saveSet(){localStorage.setItem(SET_KEY,JSON.stringify(settings));}
 
@@ -539,8 +540,11 @@ async function startRecording(){
     const cap=1080;
     if(Math.min(vw,vh)>cap){ const r=cap/Math.min(vw,vh); vw=Math.round(vw*r); vh=Math.round(vh*r); }
     const fps=30;
-    // ~0.12 bits/pixel/frame → roughly 9 Mbps at 1080p; clamp 4–12 Mbps
-    const vbps=Math.min(12000000,Math.max(4000000,Math.round(vw*vh*fps*0.12)));
+    // high: ~0.12 bits/px/frame (~9 Mbps @1080p); standard: ~0.05 (~3.7 Mbps) → much smaller files
+    const factor=settings.hq?0.12:0.05;
+    const floor=settings.hq?4000000:2000000;
+    const ceil=settings.hq?12000000:5000000;
+    const vbps=Math.min(ceil,Math.max(floor,Math.round(vw*vh*fps*factor)));
     const recOpts={videoBitsPerSecond:vbps,audioBitsPerSecond:128000};
     if(mime)recOpts.mimeType=mime;
 
@@ -771,15 +775,44 @@ async function dropboxToken(){
   tokens.dropboxAccess=j.access_token;tokens.dropboxExp=Date.now()+(j.expires_in||14000)*1000;saveTok();
   return j.access_token;
 }
+function dbxEsc(s){return s.replace(/[\u007f-\uffff]/g,c=>'\\u'+('0000'+c.charCodeAt(0).toString(16)).slice(-4));}
 async function dropboxUpload(rec){
   const tok=await dropboxToken();
   const folder=(settings.dFolder||'').trim();
   const path='/'+(folder?folder.replace(/^\/|\/$/g,'')+'/':'')+rec.filename;
-  const arg={path,mode:'add',autorename:true,mute:true};
-  // HTTP headers are ASCII-only; Dropbox requires non-ASCII escaped as \uXXXX
-  const argHeader=JSON.stringify(arg).replace(/[\u007f-\uffff]/g,c=>'\\u'+('0000'+c.charCodeAt(0).toString(16)).slice(-4));
-  const r=await fetch('https://content.dropboxapi.com/2/files/upload',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Dropbox-API-Arg':argHeader,'Content-Type':'application/octet-stream'},body:rec.blob});
-  if(!r.ok){const t=await r.text();throw new Error('Dropbox '+r.status+'：'+t.slice(0,160));}
+  const blob=rec.blob, size=blob.size;
+  const SINGLE_LIMIT=140*1024*1024;   // Dropbox single-shot cap is 150MB; stay safely under
+
+  // small file → one request
+  if(size<=SINGLE_LIMIT){
+    const arg={path,mode:'add',autorename:true,mute:true};
+    const r=await fetch('https://content.dropboxapi.com/2/files/upload',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Dropbox-API-Arg':dbxEsc(JSON.stringify(arg)),'Content-Type':'application/octet-stream'},body:blob});
+    if(!r.ok){const t=await r.text();throw new Error('Dropbox '+r.status+'：'+t.slice(0,160));}
+    return true;
+  }
+
+  // large file → chunked upload session
+  const CHUNK=16*1024*1024;
+  let offset=0, r, j;
+  // 1) start with first chunk
+  const first=blob.slice(0,Math.min(CHUNK,size));
+  r=await fetch('https://content.dropboxapi.com/2/files/upload_session/start',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Dropbox-API-Arg':JSON.stringify({close:false}),'Content-Type':'application/octet-stream'},body:first});
+  if(!r.ok){const t=await r.text();throw new Error('Dropbox start '+r.status+'：'+t.slice(0,140));}
+  j=await r.json(); const sid=j.session_id; offset=first.size;
+  // 2) append the middle chunks
+  while(offset<size){
+    const end=Math.min(offset+CHUNK,size);
+    if(end>=size)break;   // leave the final chunk for finish
+    const chunk=blob.slice(offset,end);
+    r=await fetch('https://content.dropboxapi.com/2/files/upload_session/append_v2',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Dropbox-API-Arg':JSON.stringify({cursor:{session_id:sid,offset},close:false}),'Content-Type':'application/octet-stream'},body:chunk});
+    if(!r.ok){const t=await r.text();throw new Error('Dropbox append '+r.status+'：'+t.slice(0,140));}
+    offset=end;
+  }
+  // 3) finish with the last chunk + commit
+  const last=blob.slice(offset,size);
+  const finishArg={cursor:{session_id:sid,offset},commit:{path,mode:'add',autorename:true,mute:true}};
+  r=await fetch('https://content.dropboxapi.com/2/files/upload_session/finish',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Dropbox-API-Arg':dbxEsc(JSON.stringify(finishArg)),'Content-Type':'application/octet-stream'},body:last});
+  if(!r.ok){const t=await r.text();throw new Error('Dropbox finish '+r.status+'：'+t.slice(0,160));}
   return true;
 }
 
@@ -888,6 +921,7 @@ function openDrawer(){
   $('gClientId').value=settings.gClientId; $('gFolder').value=settings.gFolder;
   $('dAppKey').value=settings.dAppKey; $('dFolder').value=settings.dFolder;
   $('swWatermark').classList.toggle('on',settings.watermark);
+  $('swHQ').classList.toggle('on',settings.hq);
   $('swAudio').classList.toggle('on',settings.audio);
   $('swAutoRec').classList.toggle('on',settings.autoRec);
   $('swG').classList.toggle('on',settings.gEnabled);
@@ -904,6 +938,7 @@ $('openSettings').onclick=openDrawer;
 $('closeSettings').onclick=closeDrawer;
 $('scrim').onclick=closeDrawer;
 bindSwitch($('swWatermark'),'watermark');
+bindSwitch($('swHQ'),'hq');
 bindSwitch($('swAudio'),'audio');
 bindSwitch($('swAutoRec'),'autoRec');
 bindSwitch($('swG'),'gEnabled',refreshDots);
