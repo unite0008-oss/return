@@ -345,6 +345,7 @@ let chunks=[];
 let recStart=0,recTimer=null;
 let currentOrder='';
 let drawRAF=null;         // watermark canvas loop
+let recordStream=null;    // stream fed to MediaRecorder (may be the canvas stream)
 
 const preview=$('preview'), canvas=$('canvas'), ctx=canvas.getContext('2d');
 
@@ -398,7 +399,19 @@ async function getCamera(withAudio){
   }catch(_){}
   return s;
 }
-function stopStream(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
+function stopStream(){
+  if(stream){ try{stream.getTracks().forEach(t=>t.stop());}catch(_){} stream=null; }
+  try{ preview.srcObject=null; }catch(_){}
+}
+/* fully release the camera + recording pipeline — prevents the camera being left locked */
+function releaseCamera(){
+  stopDraw();
+  if(mediaRecorder && mediaRecorder.state!=='inactive'){ try{mediaRecorder.stop();}catch(_){} }
+  if(recordStream && recordStream!==stream){ try{recordStream.getTracks().forEach(t=>t.stop());}catch(_){} }
+  recordStream=null;
+  stopStream();
+  mediaRecorder=null;
+}
 function waitForDims(v){return new Promise(res=>{ if(v.videoWidth&&v.videoHeight)return res(); const t=setTimeout(res,1200); v.addEventListener('loadedmetadata',()=>{clearTimeout(t);res();},{once:true}); });}
 
 /* tap the live view to refocus (supported mainly on Android Chrome; harmless elsewhere) */
@@ -550,10 +563,22 @@ function manualEntry(){
 
 /* ---------- pick a recordable mime type (mp4 for iOS, webm for Android) ---------- */
 function pickMime(){
-  const cands=['video/mp4;codecs=avc1.42E01E,mp4a.40.2','video/mp4','video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'];
+  // order matters: prefer hardware-accelerated codecs. H.264 (mp4) first;
+  // then VP8 (widely HW-accelerated on Android); VP9 last (often SOFTWARE-encoded on
+  // budget phones → overheating over long clips).
+  const cands=[
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4;codecs=h264,aac',
+    'video/mp4',
+    'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp8',
+    'video/webm;codecs=vp9,opus',
+    'video/webm'
+  ];
   for(const m of cands){ if(window.MediaRecorder&&MediaRecorder.isTypeSupported(m))return m; }
   return '';
 }
+function codecTag(mime){ mime=mime||''; if(/avc|h264|mp4/.test(mime))return 'H.264'; if(/vp9/.test(mime))return 'VP9'; if(/vp8/.test(mime))return 'VP8'; return mime.split(';')[0]||'?'; }
 function extFor(mime){return /mp4/.test(mime)?'mp4':'webm';}
 
 /* ---------- RECORD ---------- */
@@ -572,32 +597,34 @@ async function startRecording(){
     await waitForDims(preview);
 
     const mime=pickMime();
-    let recordStream=stream;
+    const useWM = !!(settings.watermark && canvas.captureStream);
+    recordStream=stream;
 
-    // true camera resolution (cap to 1080p for smooth encoding), drives both canvas size and bitrate
+    // output resolution: raw path caps at 1080p; watermark path caps harder at 720p
+    // (the canvas pipeline is GPU-heavy, so a lower res keeps the phone cool over long clips)
     let vw=preview.videoWidth||1280, vh=preview.videoHeight||720;
-    const cap=1080;
+    const cap=useWM?720:1080;
     if(Math.min(vw,vh)>cap){ const r=cap/Math.min(vw,vh); vw=Math.round(vw*r); vh=Math.round(vh*r); }
-    const fps=30;
-    // high: ~0.12 bits/px/frame (~9 Mbps @1080p); standard: ~0.05 (~3.7 Mbps) → much smaller files
-    const factor=settings.hq?0.12:0.05;
-    const floor=settings.hq?4000000:2000000;
-    const ceil=settings.hq?12000000:5000000;
+    const fps=24;
+    // high: ~0.12 bits/px/frame; standard: ~0.07 → clear at 1080p but light on the encoder
+    const factor=settings.hq?0.12:0.07;
+    const floor=settings.hq?3500000:2500000;
+    const ceil=settings.hq?10000000:6000000;
     const vbps=Math.min(ceil,Math.max(floor,Math.round(vw*vh*fps*factor)));
     const recOpts={videoBitsPerSecond:vbps,audioBitsPerSecond:128000};
     if(mime)recOpts.mimeType=mime;
 
-    // burned-in watermark via canvas pipeline (guarded; falls back to raw)
-    if(settings.watermark && canvas.captureStream){
+    // burned-in watermark via canvas pipeline (guarded; falls back to raw camera stream)
+    if(useWM){
       try{
-        canvas.width=vw; canvas.height=vh;                 // match native res — no upscaling blur
+        canvas.width=vw; canvas.height=vh;
         canvas.style.display='block'; preview.style.display='none';
         drawLoop();
         const cs=canvas.captureStream(fps);
         stream.getAudioTracks().forEach(t=>cs.addTrack(t));
         recordStream=cs;
       }catch(err){ stopDraw(); canvas.style.display='none'; preview.style.display='block'; recordStream=stream; }
-    }else{ canvas.style.display='none'; preview.style.display='block'; }
+    }else{ canvas.style.display='none'; preview.style.display='block'; recordStream=stream; }
 
     chunks=[];
     try{ mediaRecorder=new MediaRecorder(recordStream,recOpts); }
@@ -618,11 +645,15 @@ async function startRecording(){
 function tick(){const s=Math.floor((Date.now()-recStart)/1000);$('recTime').textContent=`${pad(Math.floor(s/60))}:${pad(s%60)}`;}
 
 function drawLoop(){
-  const W=canvas.width,H=canvas.height;
-  const f=()=>{
+  const interval=1000/24;   // cap actual redraws at 24fps regardless of display refresh
+  let last=-1;
+  const f=(ts)=>{
+    drawRAF=requestAnimationFrame(f);
+    if(last>=0 && ts-last<interval) return;
+    last=ts;
+    const W=canvas.width,H=canvas.height;
     if(preview.readyState>=2){ ctx.drawImage(preview,0,0,W,H); }
-    // watermark band
-    const fs=Math.max(16,Math.round(W*0.026));
+    const fs=Math.max(16,Math.round(W*0.03));
     ctx.font=`700 ${fs}px monospace`;
     const t1=stamp(new Date());
     const t2='單號 '+currentOrder;
@@ -634,9 +665,8 @@ function drawLoop(){
     ctx.fillText(t2, pad2, H-bandH+pad2);
     ctx.fillStyle='#ffffff';
     ctx.fillText(t1, pad2, H-bandH+pad2+fs+pad2*0.6);
-    drawRAF=requestAnimationFrame(f);
   };
-  f();
+  drawRAF=requestAnimationFrame(f);
 }
 function stopDraw(){if(drawRAF)cancelAnimationFrame(drawRAF);drawRAF=null;}
 
@@ -647,17 +677,17 @@ function stopRecording(){
 
 let lastSavedId=null;
 async function finishRecording(mime){
-  stopDraw();
   const blob=new Blob(chunks,{type:mime});
   chunks=[];
-  stopStream();
+  releaseCamera();
+  preview.style.display='none'; canvas.style.display='none';
   const ext=extFor(mime);
   const filename=sanitize(currentOrder)+'.'+ext;
   const rec={id:'c_'+Date.now(),orderNo:currentOrder,filename,mime,size:blob.size,createdAt:Date.now(),blob,up:{g:'idle',d:'idle'}};
   lastSavedId=rec.id;
   try{ await dbPut(rec); }catch(e){ console.error(e); }
   state='done'; render();
-  setStatus(`已存檔 <b>${filename}</b>（${humanSize(blob.size)}）`);
+  setStatus(`已存檔 <b>${filename}</b>（${humanSize(blob.size)}·${codecTag(mime)}）`);
   if(navigator.vibrate)navigator.vibrate([40,60,40]);
   // fire uploads
   uploadRecord(rec.id);
@@ -703,9 +733,7 @@ function goIdleVisualOnly(){stopDraw();clearInterval(recTimer);}
 function goIdle(){
   goIdleVisualOnly();
   stopScanEngine();
-  if(mediaRecorder&&mediaRecorder.state!=='inactive'){try{mediaRecorder.stop();}catch(_){}}
-  mediaRecorder=null;
-  stopStream();
+  releaseCamera();
   canvas.style.display='none'; preview.style.display='none';
   currentOrder=''; state='idle'; render(); setStatus('就緒');
 }
@@ -906,7 +934,7 @@ async function refreshHistory(){
     if(r.up&&r.up.d==='err'&&r.up.dmsg)errs.push('Dropbox：'+esc(r.up.dmsg));
     el.innerHTML=`
       <div class="head"><div class="no">${esc(r.orderNo)||'(無單號)'}</div></div>
-      <div class="meta">${stamp(new Date(r.createdAt))} · ${humanSize(r.size)} · ${esc(r.filename)}</div>
+      <div class="meta">${stamp(new Date(r.createdAt))} · ${humanSize(r.size)} · ${codecTag(r.mime)} · ${esc(r.filename)}</div>
       <div class="badges">
         ${settings.gEnabled?badge('Drive',r.up&&r.up.g):''}
         ${settings.dEnabled?badge('Dropbox',r.up&&r.up.d):''}
