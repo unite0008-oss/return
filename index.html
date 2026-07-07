@@ -223,6 +223,7 @@
     <div class="toggle"><div><div class="t-txt">畫面燒上浮水印</div><div class="t-sub">在影片中嵌入日期、時間與單號（存證用）</div></div><div class="sw on" id="swWatermark"></div></div>
     <div class="toggle"><div><div class="t-txt">同時錄音</div><div class="t-sub">關閉則只錄影像、沒有聲音</div></div><div class="sw on" id="swAudio"></div></div>
     <div class="toggle"><div><div class="t-txt">高畫質錄影</div><div class="t-sub">畫面更清晰，但檔案大很多、上傳較慢；關閉為標準畫質(建議)</div></div><div class="sw" id="swHQ"></div></div>
+    <div class="toggle"><div><div class="t-txt">掃到單號發出提示音</div><div class="t-sub">掃描成功時「嗶」一聲並震動</div></div><div class="sw on" id="swBeep"></div></div>
     <div class="toggle"><div><div class="t-txt">掃到單號自動開始錄影</div><div class="t-sub">省一個步驟，掃完條碼立即進入錄影</div></div><div class="sw" id="swAutoRec"></div></div>
 
     <div class="sect" style="margin-top:24px">雲端上傳</div>
@@ -317,7 +318,7 @@ function humanSize(b){if(!b) return '—';const u=['B','KB','MB','GB'];let i=0;w
 
 /* ---------- settings (localStorage) ---------- */
 const SET_KEY='packrec.settings.v1';
-const defaults={watermark:true,audio:true,autoRec:false,hq:false,gClientId:'',gFolder:'出貨錄影',gEnabled:false,dAppKey:'',dFolder:'出貨錄影',dEnabled:false};
+const defaults={watermark:true,audio:true,autoRec:false,hq:false,beep:true,gClientId:'',gFolder:'出貨錄影',gEnabled:false,dAppKey:'',dFolder:'出貨錄影',dEnabled:false};
 let settings=Object.assign({},defaults,JSON.parse(localStorage.getItem(SET_KEY)||'{}'));
 function saveSet(){localStorage.setItem(SET_KEY,JSON.stringify(settings));}
 
@@ -438,15 +439,46 @@ function ensureZXing(){
 function stopScanEngine(){
   if(scanRAF){cancelAnimationFrame(scanRAF);scanRAF=null;}
   scanBusy=false;
-  if(legacyZxing){ try{zxingReader&&zxingReader.reset();}catch(_){} }
+  if(legacyZxing){
+    try{
+      // stop decoding but KEEP the camera stream alive for a fast hand-off to recording
+      if(zxingReader&&typeof zxingReader.stopContinuousDecode==='function') zxingReader.stopContinuousDecode();
+      else if(zxingReader&&typeof zxingReader.stopStreams==='function') zxingReader.stopStreams();
+    }catch(_){}
+  }
+}
+
+/* ---------- scan success sound ---------- */
+let audioCtx=null;
+function initAudio(){
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext;
+    if(AC&&!audioCtx)audioCtx=new AC();
+    if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume();
+  }catch(_){}
+}
+function beep(){
+  if(!settings.beep)return;
+  try{
+    if(!audioCtx)return;
+    const t=audioCtx.currentTime;
+    const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+    o.type='square'; o.frequency.setValueAtTime(2000,t);   // crisp scanner-gun "beep"
+    g.gain.setValueAtTime(0.0001,t);
+    g.gain.exponentialRampToValueAtTime(0.28,t+0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+0.13);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(t); o.stop(t+0.14);
+  }catch(_){}
 }
 
 async function startScan(){
   try{
     goIdleVisualOnly();
+    initAudio();                       // unlock sound within this user tap (needed on iOS)
     state='scanning'; render(); setStatus('把條碼 / QR Code 對準框內…');
     stopStream();
-    stream=await getCamera(false);
+    stream=await getCamera(settings.audio);   // grab audio too, so recording can reuse this stream instantly
     preview.srcObject=stream; preview.muted=true; preview.playsInline=true; await preview.play().catch(()=>{});
     preview.style.display='block'; canvas.style.display='none';
     await waitForDims(preview);
@@ -506,9 +538,10 @@ function onScanned(text){
   stopScanEngine();
   currentOrder=text.trim();
   $('scannedNo').textContent=currentOrder;
+  beep();
   if(navigator.vibrate)navigator.vibrate(60);
   state='scanned';render();setStatus(`單號 <b>${currentOrder}</b> ✓`);
-  if(settings.autoRec){ setTimeout(startRecording,350); }
+  if(settings.autoRec){ setTimeout(startRecording,60); }
 }
 function manualEntry(){
   const v=prompt('輸入單號 / 訂單編號');
@@ -526,9 +559,15 @@ function extFor(mime){return /mp4/.test(mime)?'mp4':'webm';}
 /* ---------- RECORD ---------- */
 async function startRecording(){
   try{
-    setStatus('啟動相機…');
-    stopStream();
-    stream=await getCamera(settings.audio);
+    // reuse the live scan stream if it's still open (fast hand-off); otherwise open the camera
+    const vt=stream&&stream.getVideoTracks&&stream.getVideoTracks()[0];
+    const live=vt&&vt.readyState==='live';
+    const audioOk=!settings.audio||(stream&&stream.getAudioTracks&&stream.getAudioTracks().length>0);
+    if(!(live&&audioOk)){
+      setStatus('啟動相機…');
+      stopStream();
+      stream=await getCamera(settings.audio);
+    }
     preview.srcObject=stream; preview.muted=true; await preview.play().catch(()=>{});
     await waitForDims(preview);
 
@@ -922,6 +961,7 @@ function openDrawer(){
   $('dAppKey').value=settings.dAppKey; $('dFolder').value=settings.dFolder;
   $('swWatermark').classList.toggle('on',settings.watermark);
   $('swHQ').classList.toggle('on',settings.hq);
+  $('swBeep').classList.toggle('on',settings.beep);
   $('swAudio').classList.toggle('on',settings.audio);
   $('swAutoRec').classList.toggle('on',settings.autoRec);
   $('swG').classList.toggle('on',settings.gEnabled);
@@ -939,6 +979,7 @@ $('closeSettings').onclick=closeDrawer;
 $('scrim').onclick=closeDrawer;
 bindSwitch($('swWatermark'),'watermark');
 bindSwitch($('swHQ'),'hq');
+bindSwitch($('swBeep'),'beep');
 bindSwitch($('swAudio'),'audio');
 bindSwitch($('swAutoRec'),'autoRec');
 bindSwitch($('swG'),'gEnabled',refreshDots);
